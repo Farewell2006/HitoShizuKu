@@ -1,11 +1,10 @@
 # HitoShizuKu
 A deep learning toolkit used for study purpose.  
-## Features
+## Functions
 ### Differentiable Gaussian Rasterizer
 #### References
-The basic code frame is referenced from [https://github.com/graphdeco-inria/diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization) 
-
-Kerbl B, Kopanas G, Leimkühler T, et al. 3D Gaussian Splatting for Real-Time Radiance Field Rendering[J]. ACM Transactions on Graphics, 2023, 42(4).
+This work draws on the architectural design of the open-source project [[diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization)](https://github.com/graphdeco-inria/diff-gaussian-rasterization) as a reference for its basic code structure. Our implementation is constructed entirely from scratch based on a thorough comprehension of the original 3D Gaussian Splatting paper and the logical framework of the reference project. No source code from the original repository has been directly reused in this codebase.
+#### Features
 
 1. Interactivte
 
