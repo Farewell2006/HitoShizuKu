@@ -13,7 +13,7 @@ setup(
           ext_modules=[CUDAExtension(name='HitoShizuKu', 
                                      sources=['kernels/GaussianRatserization.cu',
                                               'kernels/cppwarpper/gaussian_rasterization_warpper.cpp',
-                                              'kernels/3dgs_forward.cu','kernels/3dgs_structure.cu'], 
+                                              'kernels/3dgs_forward.cu','kernels/3dgs_structure.cu','kernels/3dgs_backward.cu'], 
                                      include_dirs=[os.path.abspath("kernels/")],
                                      extra_compile_args={
                                          "cxx":["-O2","-std=c++14"],
