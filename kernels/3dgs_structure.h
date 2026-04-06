@@ -22,7 +22,7 @@ static void manual_allocate(char*& address, T*& ptr,std::size_t count, std::size
 	//把分配后的地址转化为T*类型, 再递给ptr
 	ptr = reinterpret_cast<T*>(offset);
 	//更新可用内存的起始地址
-	address = reinterpret_cast<char*>( offset+count*sizeof(T));
+	address = reinterpret_cast<char*>(offset + count * sizeof(T));
 }
 //传入空指针模拟内存分配的过程 完全不会访问内存 只是计算偏移量
 template <typename T>
@@ -30,7 +30,7 @@ size_t required(size_t N)
 {
 	char* size = nullptr;
 	T::fromChunk(size, N);
-	return ((size_t)size) + 128;
+	return ((size_t)size);
 }
 //Geometry用于存放关于Gaussian的信息, 比如点的数目, 3D位置, 2D协方差等等
 struct  Geometry

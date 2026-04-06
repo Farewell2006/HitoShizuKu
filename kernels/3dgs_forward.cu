@@ -17,7 +17,6 @@ __forceinline__ __device__ bool in_frustum(const float3 position,const float* pr
 						view_matrix[4]*position.x+view_matrix[5]*position.y+view_matrix[6]*position.z+view_matrix[7],
 						view_matrix[8]*position.x+view_matrix[9]*position.y+view_matrix[10]*position.z+view_matrix[11],
 						view_matrix[12]*position.x+view_matrix[13]*position.y+view_matrix[14]*position.z+view_matrix[15]};
-	
 	float dep=proj_matrix[8]*position.x+proj_matrix[9]*position.y+proj_matrix[10]*position.z+proj_matrix[11];
 	
 	//float inv_w=1.0/(ndc_coor.w+EPS);
@@ -50,7 +49,7 @@ __device__ void computeCovariance3D(const float3 scale, float scale_modifier, co
 	R[4]=2*(0.5-i*i-k*k);
 	R[5]=2*(j*k-r*i);
 	R[6]=2*(i*k-r*j);
-	R[7]=2*(j*k-r*i);
+	R[7]=2*(j*k+r*i);
 	R[8]=2*(0.5-i*i-j*j);
 
 	//M=RS
@@ -152,11 +151,16 @@ __global__ void GenerateKeyList(int num_points,float2* means2D, float* depth, ui
 		{
 			for(j=rect_min.y;j<rect_max.y;j++)
 			{
+				if(i>=grid.x || j>=grid.y)
+				{	
+					continue;
+				}
 				uint64_t key=j*grid.x+i;
 				key<<=32;
 				key|=*((uint32_t*)&depth[idx]);
 				keys_unsorted[offset]=key;
 				point_unsorted[offset]=idx;
+				
 				offset+=1;
 
 			}
@@ -164,17 +168,15 @@ __global__ void GenerateKeyList(int num_points,float2* means2D, float* depth, ui
 	}
 }
 
-__global__ void PreprocessKernel(int num_points, int D, int M,
+__global__ void PreprocessKernel(int num_points,
 								const float* means3D, 
 								const float* ori_colors,
 								const float* scale,
 								const float scale_modifier, 
 								const float* quant_number,
 								const float* opacity, 
-								const float* spherical_harmoincs, 
 								const float* view_matrix, 
 								const float* proj_matrix, 
-								const float* camera_position,
 								const int H,
 								const int W, 
 								const float focal_x, 
@@ -188,9 +190,7 @@ __global__ void PreprocessKernel(int num_points, int D, int M,
 								float* color, 
 								float4* conic_opacity, 
 								dim3 grid, 
-								uint32_t* insected_tiles,
-								float* position2d,
-								float* cov2d)             //这个预计算的Gaussian点讲落在哪个tile里面
+								uint32_t* insected_tiles)             //这个预计算的Gaussian点讲落在哪个tile里面
 								
 {
 	//尝试用cg::this_grid().thread_rank()获得这个线程的序号, 请自行询问AI或查阅文档! 不要用传统方法 idx=blockIdx.x*blockDim.x+threadIdx.x;
@@ -202,10 +202,10 @@ __global__ void PreprocessKernel(int num_points, int D, int M,
 		return;
 	}
 	
+	
 	//初始化我们需要求解的数据
 	radius[idx]=0;
 	insected_tiles[idx]=0;
-	
 	//有些Gaussian点是不在视椎体当中的, 这些点不用考虑, 现在实现一个判断Gaussian点是否在视椎体中的函数: in_frustum 
 	float3 position={means3D[idx*3], means3D[idx*3+1],means3D[idx*3+2]};
 	// p_ndc就是设备空间的坐标, 前两个为x,y 最后一个为深度, 必定比0大（小于0的不会被相机看见)
@@ -214,7 +214,6 @@ __global__ void PreprocessKernel(int num_points, int D, int M,
 	{
 		return;
 	}
-	
 	//计算这个3DGaussian的协方差矩阵
 	float3 p_scale={scale[3*idx],scale[3*idx+1],scale[3*idx+2]};
 	float4 quant_num={quant_number[4*idx],quant_number[4*idx+1],quant_number[4*idx+2],quant_number[4*idx+3]};
@@ -223,6 +222,7 @@ __global__ void PreprocessKernel(int num_points, int D, int M,
 
 	//计算屏幕空间中的Gaussian点
 	float3 cov2D=computeCovariance2D(position,view_matrix,focal_x, focal_y, tan_fovx,tan_fovy,cov3D+6*idx);
+	
 
 	//用伴随矩阵的方式计算2维协方差矩阵的逆矩阵 如果不可逆就放弃这个矩阵
 	float det=cov2D.x*cov2D.z-cov2D.y*cov2D.y;
@@ -235,6 +235,7 @@ __global__ void PreprocessKernel(int num_points, int D, int M,
 
 	//p_ndc已经在in_frustum中被赋值为ndc坐标, x,y为[-1,1]中的数,z是深度
 	float2 screen_coordinate={W-p_ndc.x,H- p_ndc.y};
+
 
 	//计算2D Gaussian球体的半径(即协方差矩阵的特征值的平方和)
 	float b=0.5*(cov2D.x+cov2D.z);
@@ -250,21 +251,14 @@ __global__ void PreprocessKernel(int num_points, int D, int M,
 		return;
 	}
 
+	
 	depth[idx]=p_ndc.z;
 	radius[idx]=max_radius;
 	means2D[idx]=screen_coordinate;
 	
-
-	position2d[3*idx]=means2D[idx].x;
-	position2d[3*idx+1]=means2D[idx].y;
-	position2d[3*idx+2]=p_ndc.z;
-
-	cov2d[3*idx]=conv2D_inv.x;
-	cov2d[3*idx+1]=conv2D_inv.y;
-	cov2d[3*idx+2]=conv2D_inv.z;
-
 	conic_opacity[idx]=float4{conv2D_inv.x,conv2D_inv.y,conv2D_inv.z,opacity[idx] };
 	insected_tiles[idx]=(right_up.x-left_bottom.x)*(right_up.y-left_bottom.y);
+	
 	for(int k=0;k<3;k++)
 	{
 		color[idx*3+k]=ori_colors[idx*3+k];
@@ -327,10 +321,11 @@ __global__ void splate(
 	//读取这个block应该处理的Gaussian的序号
 	uint2 range=ranges[block.group_index().y*x_blocks+block.group_index().x];
 	
+	
 	//一个thread至多跑多少轮
 	const int rounds=((range.y-range.x+BLOCK_SIZE-1)/BLOCK_SIZE);
 	int toDo=range.y-range.x;
-
+	
 	//共享内存
 	__shared__ int index[BLOCK_SIZE];
 	__shared__ float2 coordinates[BLOCK_SIZE];
@@ -381,21 +376,24 @@ __global__ void splate(
 			}
 
 			float alphas=min(0.99f,cov.w*exp(exponent));
+			
+			
 			if(alphas<1.0f/255.0f)
 			{
 				continue;
 			}
+			
 			float current_T =T*(1.0f-alphas);
 			if(current_T<0.0001f)
 			{
 				done=true;
 				continue;
 			}
-
+			
 			for(int k=0;k<3;k++)
 			{
 				
-				C[k]+=alphas*current_T*colors[index[j]*3+k];
+				C[k]+=alphas*T*colors[index[j]*3+k];
 			}
 			T=current_T;
 			last_contributor=contributor;
@@ -408,6 +406,7 @@ __global__ void splate(
 		alpha[pix_id]=T;
 
 		num_contributor[pix_id]=last_contributor;
+		
 		for(int k=0;k<3;k++)
 		{
 			res[k*H*W+pix_id]=C[k]+T*background[k];
@@ -440,38 +439,49 @@ uint32_t FindMSB(uint32_t n)
 	return msb;
 }
 
+__global__ void setZero(uint2* range,int H, int W)
+{
+	cg::thread_block block=cg::this_thread_block();
+	uint32_t x_blocks=(W+BLOCK_X-1)/BLOCK_X;
+	//这个block在图像中负责哪些像素点
+	uint2 pix_min={block.group_index().x*BLOCK_X,block.group_index().y*BLOCK_Y};
+	uint2 pix_max={min(W,block.group_index().x*BLOCK_X+BLOCK_X),min(H,block.group_index().y*BLOCK_Y+BLOCK_Y)};
+
+	uint2 pix={pix_min.x+block.thread_index().x, pix_min.y+ block.thread_index().y};
+	uint32_t pix_id=pix.y*W+pix.x;
+	
+	range[pix_id].x=0;
+	range[pix_id].y=0;
+}
+
 int gsForward(  std::function<char* (size_t)> geometryBuffer,
 	std::function<char* (size_t)> binnBuffer,
 	std::function<char* (size_t)> ImgBuffer,
 	const float* background,
 	int num_points,
-	int D, int M,
 	const float* means3D,
 	const float* colors,
 	const float* scale,
 	const float scale_modifier,
 	const float* quant_number,
 	const float* opacity,
-	const float* spherical_harmoincs,
 	const float* view_matrix,
 	const float* project_matrix,
-	const float* camera_position,
 	const int H,
 	const int W,
 	const float tan_fovx,
 	const float tan_fovy,
-	int* radius,
-	float* res,
-	float* position2d,
-	float* cov2d)
+	float* res)
 {
+	
+	
+
+
 	const float focal_x=(float)W/(2.0*tan_fovx);
 	const float focal_y=(float)H/(2.0*tan_fovy);
 
 
 	size_t chunk_size=required<Geometry>(num_points);
-
-
 	
 
 	//回忆std::function<char*(size_t)>返回一个地址
@@ -481,15 +491,13 @@ int gsForward(  std::function<char* (size_t)> geometryBuffer,
 	dim3 grid_dim((W+BLOCK_X-1)/BLOCK_X,(H+BLOCK_Y-1)/BLOCK_Y);
 	dim3 block_dim(BLOCK_X,BLOCK_Y,1);
 
-	PreprocessKernel<<<(num_points+255)/256,256>>>( num_points, D,  M, means3D, colors,
+	PreprocessKernel<<<(num_points+255)/256,256>>>( num_points,means3D, colors,
 								 scale,
 								 scale_modifier, 
 								 quant_number,
 								 opacity, 
-								 spherical_harmoincs, 
 								view_matrix, 
 								project_matrix, 
-								camera_position,
 								H,
 								W, 
 								focal_x, 
@@ -503,30 +511,44 @@ int gsForward(  std::function<char* (size_t)> geometryBuffer,
 								g.colors, 
 								g.invcoc2D_opacity, 
 								grid_dim, 
-								g.insected_tiles,
-								position2d,
-								cov2d);
+								g.insected_tiles);
 
-	cudaError_t err=cudaGetLastError();
-	if(err!=cudaSuccess)
-	{
-		printf("Kernel launch failed: %s\n",cudaGetErrorString(err));
+	cudaError_t err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		printf("预处理核函数启动失败: %s\n", cudaGetErrorString(err));
+		return -1;
 	}
+	err = cudaDeviceSynchronize();
+	if (err != cudaSuccess) {
+		printf("预处理核函数执行失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
+
+	
 	//做一次扫描获得前缀和 g.scanned_points[idx]-g.scanned_points[idx-1]就是第idx个点要着色的次数 
 	cub::DeviceScan::InclusiveSum(g.scan_address,g.scan_size,g.insected_tiles,g.scanned_points,num_points);
 	int num_rendered;
 	cudaMemcpy(&num_rendered,g.scanned_points+num_points-1,sizeof(int),cudaMemcpyDeviceToHost );
+	
 
 	size_t binn_chunk_size=required<Binning>(num_rendered);
 	char* binn_chunk_ptr=binnBuffer(binn_chunk_size);
-
-
 	Binning b=Binning::fromChunk(binn_chunk_ptr,num_rendered);
+
+
 	GenerateKeyList<<<(num_points+255)/256,256>>>(num_points,g.means2D, g.depth, g.scanned_points,b.keys_unsorted,b.pointsIdx_unsorted,g.radius, grid_dim);
-	if(err!=cudaSuccess)
-	{
-		printf("Kernel launch failed: %s\n",cudaGetErrorString(err));
+
+	err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		printf("键生成核函数启动失败: %s\n", cudaGetErrorString(err));
+		return -1;
 	}
+	err = cudaDeviceSynchronize();
+	if (err != cudaSuccess) {
+		printf("键生成核函数执行失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
+	
 	//鉴于图片大小的限制, 尽管key是64位的整数，但是我们所有的key未必能占满全部的左边32位，所以可以考虑把左边都一样的地方去掉，提升排序效率
 	//具体的说，一个key是由 [grid_Idx| depth]组成的 左边32位是grid_idx，然而所有grid得数目未必有2^{33}-1这么多，所以只需计算最大的grid_idx是多少，然后计算出这个数
 	//左边不是1的位数bit，排序时只需比较key右侧32+bit的位数即可
@@ -536,30 +558,57 @@ int gsForward(  std::function<char* (size_t)> geometryBuffer,
 
 
 	
+	
 
 	size_t img_size=required<Image>(H*W);
 	char* img_chunk_ptr=ImgBuffer(img_size);
 	Image img=Image::fromChunk(img_chunk_ptr,H*W);
 
 	
+	setZero<<<grid_dim,block_dim>>>(img.ranges,H,W);
+
+	err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		printf("块工作量初始化核函数启动失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
+	err = cudaDeviceSynchronize();
+	if (err != cudaSuccess) {
+		printf("块工作量初始化核函数执行失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
+
 
 	//确定每个block的工作范围, 对每个key，第33到32+bit位就是这个gaussian点所在的block的位置
 	GetBlockRange<<<(num_rendered+255)/256,256>>>(num_rendered, b.keys_sorted,img.ranges);
 
-
-
-
-	if(err!=cudaSuccess)
-	{
-		printf("Kernel launch failed: %s\n",cudaGetErrorString(err));
+	err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		printf("块工作量分配核函数启动失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
+	err = cudaDeviceSynchronize();
+	if (err != cudaSuccess) {
+		printf("块工作量分配核函数执行失败: %s\n", cudaGetErrorString(err));
+		return -1;
 	}
 
-	
 
 	//每个block处理它负责的Gaussian点
 	splate<<<grid_dim,block_dim>>>(background, img.ranges,b.pointIdx_sorted, H,W, 
 						g.means2D,g.colors,g.invcoc2D_opacity,
 						img.alpha, img.num_contributor, res);
+
+	err = cudaGetLastError();
+	if (err != cudaSuccess) {
+		printf("泼溅核函数启动失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
+	err = cudaDeviceSynchronize();
+	if (err != cudaSuccess) {
+		printf("泼溅核函数执行失败: %s\n", cudaGetErrorString(err));
+		return -1;
+	}
 
 
 	return num_rendered;
