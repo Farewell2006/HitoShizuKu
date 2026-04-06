@@ -9,4 +9,5 @@ A deep learning toolkit used for study purpose.
 </div>
 
 2. Differentiable
+   
    Tested with naive torch implementation
